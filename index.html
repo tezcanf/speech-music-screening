@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Speech/Music Screening Task</title>
+<style>
+  :root {
+    --bg: #808080;
+    --text: #ffffff;
+    --green: #22c55e;
+    --red: #ef4444;
+  }
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: Helvetica, Arial, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    user-select: none;
+  }
+  .screen { display: none; width: 90%; max-width: 700px; }
+  .screen.active { display: block; }
+  p { font-size: 22px; line-height: 1.5; white-space: pre-line; }
+  .cross { font-size: 64px; }
+  .feedback { font-size: 28px; font-weight: bold; }
+  input[type=text] {
+    font-size: 20px;
+    padding: 8px;
+    text-align: center;
+    border-radius: 6px;
+    border: none;
+  }
+  button {
+    font-size: 18px;
+    padding: 10px 24px;
+    margin-top: 20px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    background: #ffffff;
+    color: #222;
+  }
+  button:hover { background: #e5e5e5; }
+  .small { font-size: 15px; opacity: 0.8; margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<div id="screen-participant" class="screen active">
+  <p>Participant code</p>
+  <input type="text" id="participantInput" autocomplete="off">
+  <br>
+  <button id="participantStart">Start</button>
+</div>
+
+<div id="screen-instructions" class="screen">
+  <p>You are going to hear some noisy sounds.
+
+Your task is to make a guess about whether they sound like music or speech.
+
+After the question screen appears, please press the right arrow &#8594; for music,
+or the left arrow &#8592; for speech, as soon as you can.
+
+You will get feedback after some answers: green = correct, red = not correct.
+
+Please look at the cross in the middle of the screen throughout the experiment.
+
+The experiment has 2 blocks in total.
+
+Press ENTER or click Continue to begin.</p>
+  <button id="instructionsContinue">Continue</button>
+</div>
+
+<div id="screen-blockmsg" class="screen">
+  <p id="blockmsgText"></p>
+</div>
+
+<div id="screen-fixation" class="screen">
+  <div class="cross">+</div>
+</div>
+
+<div id="screen-response" class="screen">
+  <div class="cross" style="margin-bottom:30px;">+</div>
+  <p>Press right arrow &#8594; for music or left arrow &#8592; for speech</p>
+</div>
+
+<div id="screen-feedback" class="screen">
+  <p class="feedback" id="feedbackText"></p>
+</div>
+
+<div id="screen-end" class="screen">
+  <p>We have come to the end of the experiment. Thank you for your participation!</p>
+  <p class="small" id="downloadStatus"></p>
+</div>
+
+<audio id="stimAudio" preload="auto"></audio>
+
+<script>
+// ============================================================
+// CONFIG — edit this section to match your setup
+// ============================================================
+const BLOCKS = [
+  { label: "Block 1", folder: "All_sounds_1000ms_resampled", showFeedback: true  },
+  { label: "Block 2", folder: "All_sounds_100ms_resampled",  showFeedback: false }
+];
+const NUM_STIMULI = 40;          // stimuli per block
+const RESTING_DUR_MS = 1000;     // fixation cross before each block starts
+const FEEDBACK_DUR_MS = 1000;    // how long feedback is shown
+const ISI_MIN_MS = 1000;         // jittered wait before each stimulus (like MATLAB's 1+rand)
+const ISI_MAX_MS = 2000;
+const MANIFEST_FILE = "stimuli_list.json";
+// ============================================================
+
+let participantCode = "";
+let stimuliList = [];            // index 0 -> stimulus number 1, etc. { filename: "..." }
+let results = [];                // one row per trial
+
+function showScreen(id) {
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  document.getElementById(id).classList.add("active");
+}
+
+function shuffledOrder(n) {
+  const arr = Array.from({ length: n }, (_, i) => i + 1); // 1..n
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// --- Participant code entry ---
+document.getElementById("participantStart").addEventListener("click", startExperiment);
+document.getElementById("participantInput").addEventListener("keydown", e => {
+  if (e.key === "Enter") startExperiment();
+});
+
+async function startExperiment() {
+  const val = document.getElementById("participantInput").value.trim();
+  if (!val) { alert("Please enter a participant code."); return; }
+  participantCode = val;
+
+  try {
+    const res = await fetch(MANIFEST_FILE);
+    if (!res.ok) throw new Error("manifest not found");
+    stimuliList = await res.json();
+  } catch (err) {
+    alert("Could not load " + MANIFEST_FILE + ". Make sure it is in the same folder as this page.");
+    return;
+  }
+  if (!Array.isArray(stimuliList) || stimuliList.length < NUM_STIMULI) {
+    alert(MANIFEST_FILE + " must contain at least " + NUM_STIMULI + " entries.");
+    return;
+  }
+
+  showScreen("screen-instructions");
+}
+
+// --- Instructions ---
+document.getElementById("instructionsContinue").addEventListener("click", () => runBlocks());
+document.addEventListener("keydown", e => {
+  if (document.getElementById("screen-instructions").classList.contains("active") && e.key === "Enter") {
+    runBlocks();
+  }
+});
+
+let blocksStarted = false;
+async function runBlocks() {
+  if (blocksStarted) return;
+  blocksStarted = true;
+
+  for (let b = 0; b < BLOCKS.length; b++) {
+    await runBlock(b);
+  }
+
+  downloadResults();
+  showScreen("screen-end");
+}
+
+async function runBlock(blockIndex) {
+  const block = BLOCKS[blockIndex];
+
+  showScreen("screen-blockmsg");
+  document.getElementById("blockmsgText").textContent = block.label + " is starting.";
+  await waitForAnyKeyOrClick("screen-blockmsg");
+
+  showScreen("screen-fixation");
+  await wait(RESTING_DUR_MS);
+
+  const order = shuffledOrder(NUM_STIMULI); // stimulus numbers, shuffled
+
+  for (let trial = 0; trial < order.length; trial++) {
+    const stimNum = order[trial]; // 1-indexed stimulus number
+    await runTrial(blockIndex, block, trial, stimNum);
+  }
+}
+
+function waitForAnyKeyOrClick(screenId) {
+  return new Promise(resolve => {
+    function handler() {
+      document.removeEventListener("keydown", handler);
+      document.getElementById(screenId).removeEventListener("click", handler);
+      resolve();
+    }
+    document.addEventListener("keydown", handler);
+    document.getElementById(screenId).addEventListener("click", handler);
+  });
+}
+
+async function runTrial(blockIndex, block, trialIndex, stimNum) {
+  const entry = stimuliList[stimNum - 1];
+  const filename = entry.filename || entry; // supports ["a.wav", ...] or [{filename:"a.wav"}, ...]
+
+  // fixation + jittered wait before playing, like the original script
+  showScreen("screen-fixation");
+  const isi = ISI_MIN_MS + Math.random() * (ISI_MAX_MS - ISI_MIN_MS);
+  await wait(isi);
+
+  // play stimulus
+  const audio = document.getElementById("stimAudio");
+  audio.src = block.folder + "/" + filename;
+  await new Promise((resolve, reject) => {
+    audio.onended = resolve;
+    audio.onerror = () => resolve(); // don't hang the experiment on a missing file
+    audio.play().catch(() => resolve());
+  });
+
+  // response screen
+  showScreen("screen-response");
+  const t0 = performance.now();
+  const choice = await new Promise(resolve => {
+    function handler(e) {
+      if (e.key === "ArrowLeft") { cleanup(); resolve("S"); }
+      else if (e.key === "ArrowRight") { cleanup(); resolve("M"); }
+    }
+    function cleanup() { document.removeEventListener("keydown", handler); }
+    document.addEventListener("keydown", handler);
+  });
+  const rt = Math.round(performance.now() - t0);
+
+  const correctAnswer = stimNum > 20 ? "M" : "S";
+  const correct = choice === correctAnswer ? 1 : 0;
+
+  results.push({
+    participant: participantCode,
+    block: blockIndex + 1,
+    block_label: block.label,
+    trial: trialIndex + 1,
+    stim_num: stimNum,
+    filename: filename,
+    choice: choice,
+    correct_answer: correctAnswer,
+    correct: correct,
+    rt_ms: rt
+  });
+
+  if (block.showFeedback) {
+    showScreen("screen-feedback");
+    const fb = document.getElementById("feedbackText");
+    fb.textContent = "Your answer: " + choice;
+    fb.style.color = correct ? "var(--green)" : "var(--red)";
+    await wait(FEEDBACK_DUR_MS);
+  }
+}
+
+function downloadResults() {
+  const headers = ["participant","block","block_label","trial","stim_num","filename","choice","correct_answer","correct","rt_ms"];
+  const rows = results.map(r => headers.map(h => r[h]).join(","));
+  const csv = headers.join(",") + "\n" + rows.join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = participantCode + "_results.csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+
+  document.getElementById("downloadStatus").textContent =
+    "Your results file (" + participantCode + "_results.csv) should have downloaded automatically.";
+}
+</script>
+</body>
+</html>
