@@ -113,6 +113,10 @@ const FEEDBACK_DUR_MS = 1000;    // how long feedback is shown
 const ISI_MIN_MS = 1000;         // jittered wait before each stimulus (like MATLAB's 1+rand)
 const ISI_MAX_MS = 2000;
 const MANIFEST_FILE = "stimuli_list.json";
+
+// Paste the Google Apps Script Web App URL here (see setup instructions).
+// Leave as-is to disable automatic upload and rely on the CSV download only.
+const SUBMIT_URL = "https://script.google.com/macros/s/AKfycbwUCqThuf0JxDHw-p97sHtV7Fsu8D88OqL718p6JV13btYRASfKZ-DLxE1gn1hvj7Ho/exec";
 // ============================================================
 
 let participantCode = "";
@@ -249,7 +253,7 @@ async function runTrial(blockIndex, block, trialIndex, stimNum) {
   const correctAnswer = stimNum > 20 ? "M" : "S";
   const correct = choice === correctAnswer ? 1 : 0;
 
-  results.push({
+  const row = {
     participant: participantCode,
     block: blockIndex + 1,
     block_label: block.label,
@@ -259,8 +263,11 @@ async function runTrial(blockIndex, block, trialIndex, stimNum) {
     choice: choice,
     correct_answer: correctAnswer,
     correct: correct,
-    rt_ms: rt
-  });
+    rt_ms: rt,
+    timestamp: new Date().toISOString()
+  };
+  results.push(row);
+  submitRow(row); // fire-and-forget upload, doesn't block the experiment
 
   if (block.showFeedback) {
     showScreen("screen-feedback");
@@ -271,8 +278,18 @@ async function runTrial(blockIndex, block, trialIndex, stimNum) {
   }
 }
 
+function submitRow(row) {
+  if (!SUBMIT_URL || SUBMIT_URL.indexOf("PASTE_YOUR") !== -1) return; // not configured, skip silently
+  fetch(SUBMIT_URL, {
+    method: "POST",
+    mode: "no-cors", // Apps Script doesn't return CORS headers; we don't need to read the response
+    headers: { "Content-Type": "text/plain;charset=utf-8" }, // avoids a CORS preflight request
+    body: JSON.stringify([row])
+  }).catch(() => {}); // network hiccups shouldn't interrupt the experiment
+}
+
 function downloadResults() {
-  const headers = ["participant","block","block_label","trial","stim_num","filename","choice","correct_answer","correct","rt_ms"];
+  const headers = ["participant","block","block_label","trial","stim_num","filename","choice","correct_answer","correct","rt_ms","timestamp"];
   const rows = results.map(r => headers.map(h => r[h]).join(","));
   const csv = headers.join(",") + "\n" + rows.join("\n");
 
@@ -285,8 +302,11 @@ function downloadResults() {
   a.click();
   document.body.removeChild(a);
 
+  const uploadNote = (SUBMIT_URL && SUBMIT_URL.indexOf("PASTE_YOUR") === -1)
+    ? " Your data was also uploaded automatically."
+    : "";
   document.getElementById("downloadStatus").textContent =
-    "Your results file (" + participantCode + "_results.csv) should have downloaded automatically.";
+    "Your results file (" + participantCode + "_results.csv) should have downloaded automatically." + uploadNote;
 }
 </script>
 </body>
